@@ -66,5 +66,6 @@ internal class RateLimitInterceptor(
     private val fairLock = Semaphore(1, true)
 
     override fun intercept(chain: Interceptor.Chain): Response {
-        chain.proceed(chain.request())
+        return chain.proceed(chain.request())
+    }
 }
