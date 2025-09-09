@@ -1,67 +1,92 @@
-name: Build & Sign
+name: Build, Sign & Test
+
 on:
+  pull_request:
+    paths:
+      - '**'
+      - '!**.md'
+      - '!i18n/src/commonMain/moko-resources/**/strings.xml'
+      - '!i18n/src/commonMain/moko-resources/**/plurals.xml'
+      - 'i18n/src/commonMain/moko-resources/base/strings.xml'
+      - 'i18n/src/commonMain/moko-resources/base/plurals.xml'
   push:
-  workflow_dispatch:
+    branches:
+      - main
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
+env:
+  JAVA_VERSION: '17'
+  ANDROID_API_LEVEL: '33'
+  ANDROID_BUILD_TOOLS: '33.0.2'
 
 jobs:
   build:
-    name: Build & Test App
-    runs-on: 'ubuntu-24.04'
+    name: Build, Sign & Test App
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5 # Update to latest
-        with:
-          fetch-depth: 0 # Ensure full history for dependency review
+        uses: actions/checkout@v4
 
       - name: Dependency Review
+        uses: actions/dependency-review-action@v4
         if: github.event_name == 'pull_request'
-        uses: actions/dependency-review-action@v4 # Update to latest
 
       - name: Set up JDK
-        uses: actions/setup-java@v5 # Update to latest
+        uses: actions/setup-java@v4
         with:
-          java-version: 17
+          java-version: ${{ env.JAVA_VERSION }}
           distribution: temurin
 
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: ${{ env.ANDROID_API_LEVEL }}
+          build-tools: ${{ env.ANDROID_BUILD_TOOLS }}
+
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4 # Update to latest
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Check code format
         run: ./gradlew spotlessCheck
 
-      - name: Build app
-        run: ./gradlew assembleRelease -Pinclude-telemetry -Penable-updater
+      - name: Run Detekt
+        run: ./gradlew detekt
 
-      - name: Sign APK
-        uses: r0adkll/sign-android-release@v1 # Update to latest tag
-        with:
-          releaseDirectory: app/build/outputs/apk/release
-          signingKeyBase64: ${{ secrets.SIGNING_KEY }}
-          alias: ${{ secrets.ALIAS }}
-          keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
-          keyPassword: ${{ secrets.KEY_PASSWORD }}
-        env:
-          BUILD_TOOLS_VERSION: '35.0.1'
+      - name: Build app (Release)
+        run: ./gradlew assembleRelease -Pinclude-telemetry -Penable-updater
 
       - name: Run unit tests
         run: ./gradlew testReleaseUnitTest
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4 # Update to latest
+      - name: Run lint
+        run: ./gradlew lintRelease
+
+      - name: Upload signed APK
+        uses: actions/upload-artifact@v4
         with:
-          name: arm64-v8a-${{ github.sha }}
-          path: app/build/outputs/apk/release/app-arm64-v8a-release-unsigned-signed.apk
+          name: mihon-arm64-signed-apk
+          path: app/build/outputs/apk/release/app-arm64-v8a-release.apk
 
       - name: Upload mapping
-        uses: actions/upload-artifact@v4 # Update to latest
+        uses: actions/upload-artifact@v4
         with:
           name: mapping-${{ github.sha }}
           path: app/build/outputs/mapping/release
+
+      - name: Notify on Failure
+        if: failure()
+        # Add your notification integration here
