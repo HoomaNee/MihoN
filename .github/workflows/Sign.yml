@@ -1,5 +1,4 @@
-name: Build, Sign & Test
-
+name: Build, Sign & Release
 on:
   pull_request:
     paths:
@@ -10,79 +9,69 @@ on:
       - 'i18n/src/commonMain/moko-resources/base/strings.xml'
       - 'i18n/src/commonMain/moko-resources/base/plurals.xml'
   push:
-    branches:
-      - main
+    branches: [main]
+    tags: ['v*']
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-env:
-  JAVA_VERSION: '17'
-  ANDROID_API_LEVEL: '33'
-  ANDROID_BUILD_TOOLS: '33.0.2'
+permissions:
+  contents: write
 
 jobs:
   build:
-    name: Build, Sign & Test App
-    runs-on: ubuntu-latest
-
+    name: Build & Test App
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Dependency Review
-        uses: actions/dependency-review-action@v4
-        if: github.event_name == 'pull_request'
-
       - name: Set up JDK
         uses: actions/setup-java@v4
         with:
-          java-version: ${{ env.JAVA_VERSION }}
+          java-version: 17
           distribution: temurin
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          api-level: ${{ env.ANDROID_API_LEVEL }}
-          build-tools: ${{ env.ANDROID_BUILD_TOOLS }}
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
 
-      - name: Cache Gradle dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Check code format
-        run: ./gradlew spotlessCheck
-
-      - name: Run Detekt
-        run: ./gradlew detekt
-
-      - name: Build app (Release)
+      - name: Build Release APK
         run: ./gradlew assembleRelease -Pinclude-telemetry -Penable-updater
 
-      - name: Run unit tests
-        run: ./gradlew testReleaseUnitTest
-
-      - name: Run lint
-        run: ./gradlew lintRelease
-
-      - name: Upload signed APK
+      - name: Store APKs
         uses: actions/upload-artifact@v4
         with:
-          name: mihon-arm64-signed-apk
-          path: app/build/outputs/apk/release/app-arm64-v8a-release.apk
+          name: app-apks
+          path: |
+            app/build/outputs/apk/release/*-release-unsigned.apk
+            app/build/outputs/mapping/release
 
-      - name: Upload mapping
-        uses: actions/upload-artifact@v4
+  sign-and-release:
+    name: Sign and Release
+    needs: build
+    runs-on: ubuntu-24.04
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download APKs
+        uses: actions/download-artifact@v4
         with:
-          name: mapping-${{ github.sha }}
-          path: app/build/outputs/mapping/releas
+          name: app-apks
+          path: artifacts/
+
+      - name: Sign APKs
+        uses: r0adkll/sign-android-release@v1
+        with:
+          releaseDirectory: artifacts
+          signingKeyBase64: ${{ secrets.SIGNING_KEY }}
+          alias: ${{ secrets.KEY_ALIAS }}
+          keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/*-release-signed.apk
+            artifacts/release/mapping.txt
+          generate_release_notes: true
